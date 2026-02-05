@@ -161,11 +161,13 @@ def gateway(
     from nanobot.config.loader import load_config, get_data_dir
     from nanobot.bus.queue import MessageBus
     from nanobot.providers.litellm_provider import LiteLLMProvider
+    from nanobot.providers.openai_compatible import OpenAICompatibleLLMProvider
     from nanobot.agent.loop import AgentLoop
     from nanobot.channels.manager import ChannelManager
     from nanobot.cron.service import CronService
     from nanobot.cron.types import CronJob
     from nanobot.heartbeat.service import HeartbeatService
+    from nanobot.config.schema import ProviderConfig
     
     if verbose:
         import logging
@@ -182,6 +184,15 @@ def gateway(
     api_key = config.get_api_key()
     api_base = config.get_api_base()
     model = config.agents.defaults.model
+    provider_name = None
+    provider_type = None
+    if ":" in model:
+        model = model.split(":")[1]  # Strip provider prefix
+        provider_name = model.split(":")[0]
+        api_key = config.providers.providers.get(provider_name, ProviderConfig()).api_key or api_key
+        api_base = config.providers.providers.get(provider_name, ProviderConfig()).api_base or api_base
+        provider_type = config.providers.providers.get(provider_name, ProviderConfig()).type or None
+
     is_bedrock = model.startswith("bedrock/")
 
     if not api_key and not is_bedrock:
@@ -189,11 +200,19 @@ def gateway(
         console.print("Set one in ~/.nanobot/config.json under providers.openrouter.apiKey")
         raise typer.Exit(1)
     
-    provider = LiteLLMProvider(
-        api_key=api_key,
-        api_base=api_base,
-        default_model=config.agents.defaults.model
-    )
+    provider = None
+    if provider_type == "openai_compatible":
+        provider = OpenAICompatibleLLMProvider(
+            api_key=api_key,
+            api_base=api_base,
+            default_model=model
+        )
+    else:
+        provider = LiteLLMProvider(
+            api_key=api_key,
+            api_base=api_base,
+            default_model=config.agents.defaults.model
+        )
     
     # Create agent
     agent = AgentLoop(
@@ -286,13 +305,24 @@ def agent(
     from nanobot.config.loader import load_config
     from nanobot.bus.queue import MessageBus
     from nanobot.providers.litellm_provider import LiteLLMProvider
+    from nanobot.providers.openai_compatible import OpenAICompatibleLLMProvider
     from nanobot.agent.loop import AgentLoop
+    from nanobot.config.schema import ProviderConfig
     
     config = load_config()
     
     api_key = config.get_api_key()
     api_base = config.get_api_base()
     model = config.agents.defaults.model
+    provider_name = None
+    provider_type = None
+    if ":" in model:
+        provider_name = model.split(":")[0]
+        model = model.split(":")[1]  # Strip provider prefix
+        api_key = config.llm_providers[provider_name].api_key or api_key
+        api_base = config.llm_providers[provider_name].api_base or api_base
+        provider_type = config.llm_providers[provider_name].type or None
+        
     is_bedrock = model.startswith("bedrock/")
 
     if not api_key and not is_bedrock:
@@ -300,11 +330,20 @@ def agent(
         raise typer.Exit(1)
 
     bus = MessageBus()
-    provider = LiteLLMProvider(
-        api_key=api_key,
-        api_base=api_base,
-        default_model=config.agents.defaults.model
-    )
+    
+    provider = None
+    if provider_type == "openai-compatible":
+        provider = OpenAICompatibleLLMProvider(
+            api_key=api_key,
+            api_base=api_base,
+            default_model=model
+        )
+    else:
+        provider = LiteLLMProvider(
+              api_key=api_key,
+             api_base=api_base,
+            default_model=config.agents.defaults.model
+        )
     
     agent_loop = AgentLoop(
         bus=bus,
