@@ -18,102 +18,99 @@ class LiteLLMProvider(LLMProvider):
     a unified interface.
     """
     
-    # Provider detection patterns - more robust than simple string matching
-    _PROVIDER_PATTERNS = {
-        'openrouter': [
-            lambda base, key: key and key.startswith("sk-or-"),
-            lambda base, key: base and 'openrouter' in base.lower()
-        ],
-        'aihubmix': [
-            lambda base, key: base and any(domain in base.lower() 
-                                         for domain in ['aihubmix.com', 'aihubmix.cn'])
-        ],
-        'vllm': [
-            lambda base, key: base and not any(
-                pattern(base, key) for provider, patterns in [
-                    ('openrouter', _PROVIDER_PATTERNS['openrouter']),
-                    ('aihubmix', _PROVIDER_PATTERNS['aihubmix'])
-                ] for pattern in patterns
-            ) and base.startswith(('http://', 'https://'))
-        ]
-    }
-    
-    # Model prefixing rules - simplified and more maintainable
-    _MODEL_PREFIX_RULES = [
-        # (keywords, target_prefix)
-        (['glm', 'zhipu'], 'zai'),
-        (['qwen', 'dashscope'], 'dashscope'),
-        (['moonshot', 'kimi'], 'moonshot'),
-        (['gemini'], 'gemini'),
-    ]
-    
     def __init__(
         self, 
         api_key: str | None = None, 
         api_base: str | None = None,
-        default_model: str = "anthropic/claude-opus-4-5",
-        extra_headers: dict[str, str] | None = None,
+        default_model: str = "anthropic/claude-opus-4-5"
     ):
         super().__init__(api_key, api_base)
         self.default_model = default_model
-        self.extra_headers = extra_headers or {}
         
-        # Detect provider type using robust pattern matching
-        self.provider_type = self._detect_provider_type(api_base, api_key)
+        # Detect provider type using robust URL parsing
+        self.provider_type = self._detect_provider_type(api_base, default_model)
         
-        # Configure LiteLLM without polluting global environment
-        self._configure_litellm(api_key, api_base, default_model)
+        # Configure LiteLLM based on provider (without global env vars)
+        if api_base:
+            litellm.api_base = api_base
         
         # Disable LiteLLM logging noise
         litellm.suppress_debug_info = True
     
-    def _detect_provider_type(self, api_base: str | None, api_key: str | None) -> str:
-        """Detect provider type using robust pattern matching."""
-        if not api_base and not api_key:
-            return "direct"  # Direct provider usage
+    def _detect_provider_type(self, api_base: str | None, model: str) -> str:
+        """Detect provider type using robust URL parsing and model analysis."""
+        if not api_base:
+            # Determine from model name
+            model_lower = model.lower()
+            if 'openrouter' in model_lower:
+                return 'openrouter'
+            elif 'aihubmix' in model_lower or 'aihubmix' in (api_base or ''):
+                return 'aihubmix'
+            elif 'deepseek' in model_lower:
+                return 'deepseek'
+            elif 'anthropic' in model_lower:
+                return 'anthropic'
+            elif 'openai' in model_lower or 'gpt' in model_lower:
+                return 'openai'
+            elif 'gemini' in model_lower:
+                return 'gemini'
+            elif 'zhipu' in model_lower or 'glm' in model_lower or 'zai' in model_lower:
+                return 'zhipu'
+            elif 'groq' in model_lower:
+                return 'groq'
+            elif 'moonshot' in model_lower or 'kimi' in model_lower:
+                return 'moonshot'
+            else:
+                return 'custom'
+        
+        # Parse URL for more reliable detection
+        try:
+            parsed = urlparse(api_base.lower())
+            hostname = parsed.hostname or ''
             
-        for provider, patterns in self._PROVIDER_PATTERNS.items():
-            if any(pattern(api_base, api_key) for pattern in patterns):
-                return provider
-                
-        return "direct"
-    
-    def _configure_litellm(self, api_key: str | None, api_base: str | None, default_model: str) -> None:
-        """Configure LiteLLM without setting global environment variables."""
-        if not api_key:
-            return
-            
-        # Instead of setting global env vars, we'll pass keys directly to acompletion
-        # LiteLLM supports passing keys via kwargs for most providers
-        self._api_keys = {}
-        
-        model_lower = default_model.lower()
-        
-        # Map model keywords to provider keys
-        key_mapping = {
-            'deepseek': 'DEEPSEEK_API_KEY',
-            'anthropic': 'ANTHROPIC_API_KEY', 
-            'openai': 'OPENAI_API_KEY',
-            'gpt': 'OPENAI_API_KEY',
-            'gemini': 'GEMINI_API_KEY',
-            'zhipu': 'ZHIPUAI_API_KEY',
-            'glm': 'ZHIPUAI_API_KEY',
-            'zai': 'ZAI_API_KEY',
-            'dashscope': 'DASHSCOPE_API_KEY',
-            'qwen': 'DASHSCOPE_API_KEY',
-            'groq': 'GROQ_API_KEY',
-            'moonshot': 'MOONSHOT_API_KEY',
-            'kimi': 'MOONSHOT_API_KEY',
-        }
-        
-        # Set appropriate API key based on model
-        for keyword, env_var in key_mapping.items():
-            if keyword in model_lower:
-                self._api_keys[env_var] = api_key
-                break
-        else:
-            # Default fallback - assume OpenAI-compatible
-            self._api_keys['OPENAI_API_KEY'] = api_key
+            if 'openrouter' in hostname:
+                return 'openrouter'
+            elif 'aihubmix' in hostname:
+                return 'aihubmix'
+            elif 'deepseek' in hostname:
+                return 'deepseek'
+            elif 'anthropic' in hostname:
+                return 'anthropic'
+            elif 'openai' in hostname:
+                return 'openai'
+            elif 'google' in hostname or 'gemini' in hostname:
+                return 'gemini'
+            elif 'zhipu' in hostname or 'zhipuai' in hostname:
+                return 'zhipu'
+            elif 'groq' in hostname:
+                return 'groq'
+            elif 'moonshot' in hostname:
+                return 'moonshot'
+            else:
+                return 'custom'
+        except Exception:
+            # Fallback to simple string matching
+            api_base_lower = api_base.lower()
+            if 'openrouter' in api_base_lower:
+                return 'openrouter'
+            elif 'aihubmix' in api_base_lower:
+                return 'aihubmix'
+            elif 'deepseek' in api_base_lower:
+                return 'deepseek'
+            elif 'anthropic' in api_base_lower:
+                return 'anthropic'
+            elif 'openai' in api_base_lower:
+                return 'openai'
+            elif 'gemini' in api_base_lower:
+                return 'gemini'
+            elif 'zhipu' in api_base_lower or 'zhipuai' in api_base_lower:
+                return 'zhipu'
+            elif 'groq' in api_base_lower:
+                return 'groq'
+            elif 'moonshot' in api_base_lower:
+                return 'moonshot'
+            else:
+                return 'custom'
     
     async def chat(
         self,
@@ -138,15 +135,6 @@ class LiteLLMProvider(LLMProvider):
         """
         model = model or self.default_model
         
-        # Apply model prefixing rules
-        model = self._apply_model_prefix(model)
-        
-        # Apply provider-specific model formatting
-        model = self._format_model_for_provider(model)
-        
-        # Handle provider-specific constraints
-        temperature = self._adjust_temperature_for_model(model, temperature)
-        
         kwargs: dict[str, Any] = {
             "model": model,
             "messages": messages,
@@ -154,16 +142,44 @@ class LiteLLMProvider(LLMProvider):
             "temperature": temperature,
         }
         
-        # Pass API keys directly instead of using environment variables
-        kwargs.update({key.lower(): value for key, value in self._api_keys.items()})
+        # Pass API key directly instead of setting global env vars
+        if self.api_key:
+            kwargs["api_key"] = self.api_key
         
         # Pass api_base directly for custom endpoints
         if self.api_base:
             kwargs["api_base"] = self.api_base
         
-        # Pass extra headers (e.g. APP-Code for AiHubMix)
-        if self.extra_headers:
-            kwargs["extra_headers"] = self.extra_headers
+        # Handle special cases for specific providers
+        if self.provider_type == 'aihubmix':
+            # AiHubMix uses OpenAI-compatible API with openai/ prefix
+            if not model.startswith("openai/"):
+                model_name = model.split('/')[-1] if '/' in model else model
+                kwargs["model"] = f"openai/{model_name}"
+        
+        elif self.provider_type == 'openrouter':
+            # OpenRouter requires openrouter/ prefix
+            if not model.startswith("openrouter/"):
+                kwargs["model"] = f"openrouter/{model}"
+        
+        elif self.provider_type == 'zhipu':
+            # Zhipu/Z.ai models need zai/ prefix
+            if not (model.startswith("zai/") or model.startswith("zhipu/")):
+                kwargs["model"] = f"zai/{model}"
+        
+        elif self.provider_type == 'gemini':
+            # Gemini models need gemini/ prefix
+            if not model.startswith("gemini/"):
+                kwargs["model"] = f"gemini/{model}"
+        
+        elif self.provider_type == 'custom' and self.api_base:
+            # Custom vLLM endpoints use hosted_vllm/ prefix per LiteLLM docs
+            if not model.startswith("hosted_vllm/"):
+                kwargs["model"] = f"hosted_vllm/{model}"
+        
+        # Handle Kimi/Moonshot temperature requirement
+        if self.provider_type == 'moonshot' and temperature != 1.0:
+            kwargs["temperature"] = 1.0
         
         if tools:
             kwargs["tools"] = tools
@@ -178,40 +194,6 @@ class LiteLLMProvider(LLMProvider):
                 content=f"Error calling LLM: {str(e)}",
                 finish_reason="error",
             )
-    
-    def _apply_model_prefix(self, model: str) -> str:
-        """Apply model prefixing rules based on model name."""
-        model_lower = model.lower()
-        
-        # Skip if already prefixed
-        skip_prefixes = ['openrouter/', 'hosted_vllm/', 'zai/', 'dashscope/', 'moonshot/', 'gemini/']
-        if any(model.startswith(prefix) for prefix in skip_prefixes):
-            return model
-            
-        for keywords, prefix in self._MODEL_PREFIX_RULES:
-            if any(kw in model_lower for kw in keywords):
-                return f"{prefix}/{model}"
-                
-        return model
-    
-    def _format_model_for_provider(self, model: str) -> str:
-        """Format model name based on detected provider type."""
-        if self.provider_type == 'openrouter' and not model.startswith('openrouter/'):
-            return f"openrouter/{model}"
-        elif self.provider_type == 'aihubmix':
-            # AiHubMix uses OpenAI-compatible API, so strip any existing prefix
-            model_name = model.split('/')[-1]
-            return f"openai/{model_name}"
-        elif self.provider_type == 'vllm':
-            return f"hosted_vllm/{model}"
-            
-        return model
-    
-    def _adjust_temperature_for_model(self, model: str, temperature: float) -> float:
-        """Adjust temperature for models with specific constraints."""
-        if "kimi-k2.5" in model.lower():
-            return 1.0
-        return temperature
     
     def _parse_response(self, response: Any) -> LLMResponse:
         """Parse LiteLLM response into our standard format."""
