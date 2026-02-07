@@ -1,7 +1,8 @@
 """Configuration schema using Pydantic."""
 
 from pathlib import Path
-from pydantic import BaseModel, Field
+from typing import Optional, Dict, Any
+from pydantic import BaseModel, Field, validator
 from pydantic_settings import BaseSettings
 
 
@@ -66,6 +67,11 @@ class ProviderConfig(BaseModel):
     api_key: str = ""
     api_base: str | None = None
     extra_headers: dict[str, str] | None = None  # Custom headers (e.g. APP-Code for AiHubMix)
+    
+    @property
+    def is_configured(self) -> bool:
+        """Check if this provider is properly configured."""
+        return bool(self.api_key)
 
 
 class ProvidersConfig(BaseModel):
@@ -126,28 +132,81 @@ class Config(BaseSettings):
         return Path(self.agents.defaults.workspace).expanduser()
     
     # Default base URLs for API gateways
-    _GATEWAY_DEFAULTS = {"openrouter": "https://openrouter.ai/api/v1", "aihubmix": "https://aihubmix.com/v1"}
+    _GATEWAY_DEFAULTS = {
+        "openrouter": "https://openrouter.ai/api/v1", 
+        "aihubmix": "https://aihubmix.com/v1"
+    }
+    
+    # Provider detection mapping with explicit priorities
+    _PROVIDER_PRIORITIES = [
+        # Gateways first (can serve multiple models)
+        ("openrouter", ["openrouter"]),
+        ("aihubmix", ["aihubmix"]),
+        # Specific providers
+        ("anthropic", ["anthropic", "claude"]),
+        ("openai", ["openai", "gpt"]),
+        ("gemini", ["gemini"]),
+        ("zhipu", ["zhipu", "glm", "zai"]),
+        ("dashscope", ["dashscope", "qwen"]),
+        ("moonshot", ["moonshot", "kimi"]),
+        ("deepseek", ["deepseek"]),
+        ("groq", ["groq"]),
+        ("vllm", ["vllm"]),
+    ]
 
     def get_provider(self, model: str | None = None) -> ProviderConfig | None:
-        """Get matched provider config (api_key, api_base, extra_headers). Falls back to first available."""
-        model = (model or self.agents.defaults.model).lower()
-        p = self.providers
-        # Keyword → provider mapping (order matters: gateways first)
-        keyword_map = {
-            "aihubmix": p.aihubmix, "openrouter": p.openrouter,
-            "deepseek": p.deepseek, "anthropic": p.anthropic, "claude": p.anthropic,
-            "openai": p.openai, "gpt": p.openai, "gemini": p.gemini,
-            "zhipu": p.zhipu, "glm": p.zhipu, "zai": p.zhipu,
-            "dashscope": p.dashscope, "qwen": p.dashscope,
-            "groq": p.groq, "moonshot": p.moonshot, "kimi": p.moonshot, "vllm": p.vllm,
-        }
-        for kw, provider in keyword_map.items():
-            if kw in model and provider.api_key:
+        """
+        Get matched provider config based on model name and configuration.
+        
+        Returns the most appropriate provider based on:
+        1. Explicit provider prefix in model (e.g., "openrouter/claude-3.5-sonnet")
+        2. Model keywords matching configured providers
+        3. Fallback to first available gateway or provider
+        
+        Args:
+            model: Model identifier to match against providers
+            
+        Returns:
+            Configured ProviderConfig or None if no provider is configured
+        """
+        model_name = (model or self.agents.defaults.model).lower()
+        
+        # Check for explicit provider prefix (e.g., "openrouter/claude-3.5-sonnet")
+        if "/" in model_name:
+            provider_prefix = model_name.split("/")[0]
+            provider_attr = provider_prefix.replace("-", "_")  # Handle hyphens in provider names
+            if hasattr(self.providers, provider_attr):
+                provider_config = getattr(self.providers, provider_attr)
+                if provider_config.is_configured:
+                    return provider_config
+        
+        # Check model keywords against provider priorities
+        for provider_name, keywords in self._PROVIDER_PRIORITIES:
+            if any(keyword in model_name for keyword in keywords):
+                provider_config = getattr(self.providers, provider_name)
+                if provider_config.is_configured:
+                    return provider_config
+        
+        # Fallback: return first configured provider
+        all_providers = [
+            self.providers.openrouter,
+            self.providers.aihubmix,
+            self.providers.anthropic,
+            self.providers.openai,
+            self.providers.deepseek,
+            self.providers.gemini,
+            self.providers.zhipu,
+            self.providers.dashscope,
+            self.providers.moonshot,
+            self.providers.vllm,
+            self.providers.groq,
+        ]
+        
+        for provider in all_providers:
+            if provider.is_configured:
                 return provider
-        # Fallback: gateways first (can serve any model), then specific providers
-        all_providers = [p.openrouter, p.aihubmix, p.anthropic, p.openai, p.deepseek,
-                         p.gemini, p.zhipu, p.dashscope, p.moonshot, p.vllm, p.groq]
-        return next((pr for pr in all_providers if pr.api_key), None)
+                
+        return None
 
     def get_api_key(self, model: str | None = None) -> str | None:
         """Get API key for the given model. Falls back to first available key."""
